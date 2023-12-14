@@ -8,6 +8,7 @@ Distributed Homomorphic Math
 ### Requirements
 * C++ >= 17
 * Boost
+* HElib
 
 ### Build examples
 ```bash
@@ -26,6 +27,6 @@ make
 ./client -w localhost:8888 -w localhost:9999 --op echo
 ./client -w localhost:8888 -w localhost:9999 --op add
 ./client -w localhost:8888 -w localhost:9999 --op mul
-./client -w localhost:8888 -w localhost:9999 --op hadd
-./client -w localhost:8888 -w localhost:9999 --op hmul
+./client -w localhost:8888 -w localhost:9999 --op hadd --size 64
+./client -w localhost:8888 -w localhost:9999 --op hmul --size 64
 ```
