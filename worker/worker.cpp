@@ -16,6 +16,7 @@ using namespace dhm;
 
 class TcpConnection : public boost::enable_shared_from_this<TcpConnection> {
   tcp::socket socket;
+  std::string endpoint;
 
 public:
   using pointer = boost::shared_ptr<TcpConnection>;
@@ -27,8 +28,10 @@ public:
   tcp::socket &getSocket() { return socket; }
 
   void start() {
-    std::cerr << "> " << socket.remote_endpoint() << ": session started"
-              << std::endl;
+    std::ostringstream os;
+    os << socket.remote_endpoint();
+    endpoint = os.str();
+    std::cerr << "> " << endpoint << ": session started" << std::endl;
     waitRequest();
   }
 
@@ -39,8 +42,7 @@ public:
   }
 
   ~TcpConnection() {
-    std::cerr << "> " << socket.remote_endpoint() << ": session ended"
-              << std::endl;
+    std::cerr << "> " << endpoint << ": session ended" << std::endl;
   }
 
 private:
@@ -51,24 +53,37 @@ private:
     if (!try_receive(op, socket))
       return;
 
-    std::cerr << "> " << socket.remote_endpoint()
-              << ": request: " << opToString(op) << std::endl;
+    std::cerr << "> " << endpoint << ": request: " << opToString(op)
+              << std::endl;
     if (op == OP_ECHO)
-      handleEcho<float>();
+      handleEcho<double>();
     else if (op == OP_ADD || op == OP_MUL)
-      handleBinOp<float>(op);
+      handleBinOp<double>(op);
+    else if (op == OP_HADD || op == OP_HMUL)
+      handleEncOp(op);
     else
       throw std::runtime_error("unsupported operation");
-    std::cerr << "> " << socket.remote_endpoint() << ": sent result"
-              << std::endl;
+    std::cerr << "> " << endpoint << ": sent result" << std::endl;
     waitRequest();
   } catch (std::exception &e) {
-    std::cerr << "> " << socket.remote_endpoint() << ": " << e.what()
-              << std::endl;
+    std::cerr << "> " << endpoint << ": " << e.what() << std::endl;
   }
 
   template <class T> void handleEcho();
   template <class T> void handleBinOp(Operation op);
+  void handleEncOp(Operation op);
+
+  std::string receiveString() {
+    auto size = receive<unsigned>(socket);
+    std::string res(size, '0');
+    receive_buf(res.data(), res.size(), socket);
+    return res;
+  }
+
+  void sendString(const std::string &s) {
+    send<unsigned>(s.size(), socket);
+    send_buf(s.data(), s.size(), socket);
+  }
 };
 
 class TcpServer {
@@ -104,7 +119,7 @@ private:
 template <class DataT> void TcpConnection::handleEcho() {
   auto hdr = MatrixHeader::receive(socket);
   auto data = receive_buf<DataT>(hdr.rows() * hdr.columns(), socket);
-  std::cout << "> " << socket.remote_endpoint() << ": received matrix ["
+  std::cout << "> " << endpoint << ": received matrix ["
             << hdr.rows() << " x " << hdr.columns() << "]" << std::endl;
   hdr.send(socket);
   send_buf(data, socket);
@@ -113,11 +128,11 @@ template <class DataT> void TcpConnection::handleEcho() {
 template <class DataT> void TcpConnection::handleBinOp(Operation op) {
   auto hdr1 = MatrixHeader::receive(socket);
   auto data1 = receive_buf<DataT>(hdr1.rows() * hdr1.columns(), socket);
-  std::cout << "> " << socket.remote_endpoint() << ": received matrix ["
+  std::cout << "> " << endpoint << ": received matrix ["
             << hdr1.rows() << " x " << hdr1.columns() << "]" << std::endl;
   auto hdr2 = MatrixHeader::receive(socket);
   auto data2 = receive_buf<DataT>(hdr2.rows() * hdr2.columns(), socket);
-  std::cout << "> " << socket.remote_endpoint() << ": received matrix ["
+  std::cout << "> " << endpoint << ": received matrix ["
             << hdr2.rows() << " x " << hdr2.columns() << "]" << std::endl;
   Matrix<DataT> A(data1, hdr1.columns());
   Matrix<DataT> B(data2, hdr2.columns());
@@ -130,12 +145,90 @@ template <class DataT> void TcpConnection::handleBinOp(Operation op) {
       throw std::runtime_error("mismatching matrix sizes");
     A += B;
   } else if (op == OP_MUL) {
+    if (hdr1.columns() != hdr2.rows())
+      throw std::runtime_error("mismatching matrix sizes");
     A = mulT(A, B);
   } else {
     throw std::runtime_error("unsupported operation");
   }
   hdr1.send(socket);
   send_buf(A.data(), A.size() * sizeof(DataT), socket);
+}
+
+helib::Ctxt multiply(const helib::Ctxt &v,
+                     const std::vector<helib::Ctxt> matrix) {
+  assert(!matrix.empty());
+
+  helib::Ctxt res = v;
+
+  res *= matrix[0];
+  helib::totalSums(res);
+
+  for (unsigned i = 1; i < matrix.size(); ++i) {
+    auto tmp = v;
+    tmp *= matrix[i];
+    helib::totalSums(tmp);
+    helib::shift(tmp, i);
+    res += tmp;
+  }
+  return res;
+}
+
+void TcpConnection::handleEncOp(Operation op) {
+  EncContextOptions opts;
+  receive_buf(&opts, sizeof(opts), socket);
+  std::cerr << "> " << endpoint << ": encryption options "
+            << opts.m << " " << opts.bits << " " << opts.precision << " "
+            << opts.c << std::endl;
+  auto key = receiveString();
+  std::cerr << "> " << endpoint << ": received public key"
+            << std::endl;
+  auto hdr1 = MatrixHeader::receive(socket);
+  std::vector<std::string> Atxt;
+  for (unsigned i = 0; i < hdr1.rows(); ++i)
+    Atxt.emplace_back(receiveString());
+  std::cout << "> " << endpoint
+            << ": received encrypted matrix [" << hdr1.rows() << " x "
+            << hdr1.columns() << "]" << std::endl;
+
+  auto hdr2 = MatrixHeader::receive(socket);
+  std::vector<std::string> Btxt;
+  for (unsigned i = 0; i < hdr2.rows(); ++i)
+    Btxt.emplace_back(receiveString());
+  std::cout << "> " << endpoint
+            << ": received encrypted matrix [" << hdr2.rows() << " x "
+            << hdr2.columns() << "]" << std::endl;
+
+  auto enc_context = opts.buildContext();
+  auto pk = readKey(enc_context, key);
+
+  std::vector<std::string> results;
+  if (op == OP_HADD) {
+    if (hdr1.rows() != hdr2.rows() || hdr1.columns() != hdr2.columns())
+      throw std::runtime_error("mismatching matrix sizes");
+    for (unsigned i = 0; i < hdr1.rows(); ++i) {
+      auto v1 = readCtxt(pk, Atxt[i]);
+      auto v2 = readCtxt(pk, Btxt[i]);
+      v1 += v2;
+      results.push_back(stringify(v1));
+    }
+  } else if (op == OP_HMUL) {
+    if (hdr1.columns() != hdr2.rows())
+      throw std::runtime_error("mismatching matrix sizes");
+    std::vector<helib::Ctxt> B;
+    std::transform(Btxt.begin(), Btxt.end(), std::back_inserter(B),
+                   [&pk](auto &&text) { return readCtxt(pk, text); });
+    for (unsigned i = 0; i < hdr1.rows(); ++i) {
+      auto v = readCtxt(pk, Atxt[i]);
+      results.push_back(stringify(multiply(v, B)));
+    }
+
+  } else {
+    throw std::runtime_error("unsupported operation");
+  }
+  hdr1.send(socket);
+  std::for_each(results.begin(), results.end(),
+                [this](auto &&res) { sendString(res); });
 }
 
 int main(int argc, char *argv[]) try {

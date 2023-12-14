@@ -102,4 +102,16 @@ public:
   }
 };
 
+template <class T>
+void undiff(Matrix<T> &matrix) {
+  for (size_t i = 0; i < matrix.rows(); ++i) {
+    T prev = 0;
+    for (size_t j = 0; j < matrix.columns(); ++j) {
+      auto val = matrix(i, j);
+      matrix(i, j) -= prev;
+      prev = val;
+    }
+  }
+}
+
 } // namespace dhm

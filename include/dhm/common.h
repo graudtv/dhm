@@ -2,6 +2,7 @@
 
 #include <boost/array.hpp>
 #include <boost/asio.hpp>
+#include <helib/helib.h>
 #include <iostream>
 
 namespace dhm {
@@ -60,7 +61,7 @@ std::vector<DataT> receive_buf(unsigned size, tcp::socket &socket) {
   return data;
 }
 
-enum Operation : unsigned { OP_ECHO, OP_ADD, OP_MUL };
+enum Operation : unsigned { OP_ECHO, OP_ADD, OP_MUL, OP_HADD, OP_HMUL };
 
 inline const char *opToString(Operation op) {
   switch (op) {
@@ -70,6 +71,10 @@ inline const char *opToString(Operation op) {
     return "add";
   case OP_MUL:
     return "mul";
+  case OP_HADD:
+    return "hadd";
+  case OP_HMUL:
+    return "hmul";
   default:
     return "<invalid_operation>";
   }
@@ -82,6 +87,10 @@ inline Operation parseOperation(const std::string &op) {
     return OP_ADD;
   if (op == "mul")
     return OP_MUL;
+  if (op == "hadd")
+    return OP_HADD;
+  if (op == "hmul")
+    return OP_HMUL;
   throw std::runtime_error("invalid operation '" + op + "'");
 }
 
@@ -107,5 +116,70 @@ struct MatrixHeader {
     return hdr;
   }
 };
+
+struct EncContextOptions {
+  unsigned m;
+  unsigned bits;
+  unsigned precision;
+  unsigned c;
+
+  EncContextOptions() = default;
+  EncContextOptions(unsigned m, unsigned bits, unsigned precision, unsigned c)
+      : m(m), bits(bits), precision(precision), c(c) {}
+
+  helib::Context buildContext() const {
+    return helib::ContextBuilder<helib::CKKS>()
+        .m(m)
+        .bits(bits)
+        .precision(precision)
+        .c(c)
+        .build();
+  }
+};
+
+inline std::string stringify(const helib::Ctxt &c) {
+  std::ostringstream os;
+  c.writeTo(os);
+  return os.str();
+}
+
+inline std::string stringify(const helib::PubKey &pk) {
+  std::ostringstream os;
+  pk.writeTo(os);
+  return os.str();
+}
+
+inline helib::Ctxt encrypt(const std::vector<double> &data,
+                           const helib::PubKey &pk) {
+  helib::PtxtArray m(pk.getContext(), data);
+  helib::Ctxt c(pk);
+  m.encrypt(c);
+  return c;
+}
+
+inline std::vector<double> decrypt(const helib::Ctxt &c, const helib::SecKey &sk) {
+  helib::PtxtArray res(sk.getContext());
+  res.decrypt(c, sk);
+  std::vector<double> vres;
+  res.store(vres);
+  return vres;
+}
+
+inline helib::Ctxt readCtxt(const helib::PubKey &pk, const std::vector<char> &text) {
+  std::string str(text.begin(), text.end());
+  std::istringstream is(str);
+  return helib::Ctxt::readFrom(is, pk);
+}
+
+inline helib::Ctxt readCtxt(const helib::PubKey &pk, const std::string &text) {
+  std::istringstream is(text);
+  return helib::Ctxt::readFrom(is, pk);
+}
+
+inline helib::PubKey readKey(const helib::Context &ctx,
+                             const std::string &text) {
+  std::istringstream is(text);
+  return helib::PubKey::readFrom(is, ctx);
+}
 
 } // namespace dhm
